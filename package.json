@@ -1,7 +1,7 @@
 {
   "name": "dsh-inline-images",
   "description": "对话内联图片:LLM 回复中输出的本地图片路径直接在消息正文内渲染为图片,支持 9 种格式、点击放大灯箱、可调尺寸",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "license": "MIT",
   "type": "module",
   "main": "lib/index.js",

@@ -13,7 +13,9 @@ import type { InvocationDescriptor } from '@deepseek-ai/dsh-typert-protocol'
 import { z } from 'zod'
 
 export const name = 'dsh-inline-images'
-export const inject = ['llm']
+// typert:apply() 里通过 ctx.typert 注册 invocation manifest,必须声明依赖,
+// 否则 fiber 可能在 typert 服务就绪前执行 apply。
+export const inject = ['llm', 'typert']
 
 const ROUTE_PATH = '/plugins/dsh-inline-images/image'
 const REF_MAX_WIDTH = 'INLINE_IMAGE_MAX_WIDTH'
@@ -21,13 +23,16 @@ const REF_MAX_HEIGHT = 'INLINE_IMAGE_MAX_HEIGHT'
 const IMAGE_FORMATS = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'svg', 'avif', 'bmp', 'ico']
 
 /* ---------- wire contract ---------- */
+// codec 形状由 dsh-typert-registry 约定: { mode, typeSymbol, create: () => ZodType }。
+// 直接给 `schema` 字段不会被识别,registry 物化 codec 时拿不到 schema。
 const configSchema = z.object({ maxWidth: z.number(), maxHeight: z.number(), formats: z.array(z.string()) }).readonly()
+const setConfigArgsSchema = z.object({ maxWidth: z.number().optional(), maxHeight: z.number().optional() })
 export const INLINE_INVOCATIONS: readonly InvocationDescriptor[] = [
   { id: 'dsh-inline-images#inlineImages/getConfig', service: 'inlineImages', namespace: 'inlineImages', method: 'getConfig', invocation: { kind: 'direct' },
-    parameters: [], result: { mode: 'strict', typeSymbol: 'dsh-inline-images#Config', schema: configSchema } },
+    parameters: [], result: { mode: 'strict', typeSymbol: 'dsh-inline-images#Config', create: () => configSchema } },
   { id: 'dsh-inline-images#inlineImages/setConfig', service: 'inlineImages', namespace: 'inlineImages', method: 'setConfig', invocation: { kind: 'direct' },
-    parameters: [{ name: 'args', wire: 'args', source: 'argument', codec: { mode: 'strict', typeSymbol: 'dsh-inline-images#SetConfigArgs', schema: z.object({ maxWidth: z.number().optional(), maxHeight: z.number().optional() }) } }],
-    result: { mode: 'strict', typeSymbol: 'dsh-inline-images#Config', schema: configSchema } },
+    parameters: [{ name: 'args', wire: 'args', source: 'argument', codec: { mode: 'strict', typeSymbol: 'dsh-inline-images#SetConfigArgs', create: () => setConfigArgsSchema } }],
+    result: { mode: 'strict', typeSymbol: 'dsh-inline-images#Config', create: () => configSchema } },
 ]
 
 export const INLINE_MANIFEST: TypertContribution = {
@@ -176,12 +181,30 @@ export function apply(ctx: Context): void {
   const llm = ctx.get('llm')
   const token = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2)
 
-  // Remote 服务
+  // Remote 服务:apply 会在 fiber 重放(插件热重载、依赖变更)时再次执行,
+  // 而服务已在首次执行时 provide 过,重复 provide 会抛 `has been registered`。
   const runtime = new InlineImagesRuntime(ctx)
-  ctx.provide('inlineImages', runtime as never)
+  if (ctx.get('inlineImages') === undefined) {
+    try {
+      ctx.provide('inlineImages', runtime as never)
+    } catch (error) {
+      if (!String((error as { message?: string } | undefined)?.message ?? error).includes('has been registered')) throw error
+    }
+  }
   ctx.effect(() => {
-    const dispose = (ctx.typert as any).register(INLINE_MANIFEST)
-    return () => { void dispose() }
+    const typert = ctx.get('typert')
+    if (typert === undefined) {
+      console.error('[dsh-inline-images] typert 服务不可用,跳过 Remote manifest 注册')
+      return
+    }
+    try {
+      const dispose = (typert as any).register(INLINE_MANIFEST)
+      return () => { void dispose() }
+    } catch (error) {
+      // 生成物非法(例如 codec 缺 create())必须可见,否则整条 entry 会静默失效。
+      console.error('[dsh-inline-images] typert manifest 注册失败:', error)
+      throw error
+    }
   }, 'dsh-inline-images: typert manifest')
 
   // 图片回环路由

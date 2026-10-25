@@ -9,6 +9,11 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 
 export const name = 'dsh-inline-images'
+// 只依赖 slots:客户端 Web 端的 `remote.<namespace>` 服务由
+// @deepseek-ai/dsh-api-remotes 的 client bundle 静态挂载(该 bundle 内硬编码了一份
+// host 能力清单),第三方插件的 namespace 不在其中,`remote.inlineImages` 恒不存在。
+// 若把它写进 inject,插件会永久 pending(waiting for service),连灯箱与 CSS 一起失效,
+// 因此这里只能在运行时探测,并在缺失时降级。
 export const inject = ['slots']
 
 function el(type: any, props: any, ...children: any[]) {
@@ -52,25 +57,32 @@ function ImageLightbox() {
 }
 
 function InlineSettings(props: any) {
-  const remote = props.ctx.remote as any
+  // remote.inlineImages 在多数 Web 宿主上并不存在(见 inject 处说明),这里按可选端点处理:
+  // 缺失时保留默认尺寸,面板给出说明而不是抛 TypeError。
+  const endpoint = (props.ctx?.remote as any)?.inlineImages
   const [maxWidth, setMaxWidth] = React.useState(640)
   const [maxHeight, setMaxHeight] = React.useState(420)
   const [status, setStatus] = React.useState<{ kind: string; text: string } | null>(null)
 
   React.useEffect(() => {
+    if (endpoint === undefined) {
+      applyImageSizes(640, 420)
+      return
+    }
     let alive = true
-    remote.inlineImages.getConfig().then((cfg: any) => {
+    endpoint.getConfig().then((cfg: any) => {
       if (!alive) return
       setMaxWidth(cfg.maxWidth ?? 640)
       setMaxHeight(cfg.maxHeight ?? 420)
       applyImageSizes(cfg.maxWidth ?? 640, cfg.maxHeight ?? 420)
     }).catch(() => applyImageSizes(640, 420))
     return () => { alive = false }
-  }, [remote])
+  }, [endpoint])
 
   const save = () => {
+    if (endpoint === undefined) return
     setStatus(null)
-    remote.inlineImages.setConfig({ args: { maxWidth: Number(maxWidth) || 640, maxHeight: Number(maxHeight) || 420 } }).then((cfg: any) => {
+    endpoint.setConfig({ args: { maxWidth: Number(maxWidth) || 640, maxHeight: Number(maxHeight) || 420 } }).then((cfg: any) => {
       setMaxWidth(cfg.maxWidth)
       setMaxHeight(cfg.maxHeight)
       applyImageSizes(cfg.maxWidth, cfg.maxHeight)
@@ -87,14 +99,18 @@ function InlineSettings(props: any) {
     el('div', { style: { fontSize: 12, opacity: 0.7, lineHeight: 1.5 } },
       'LLM 回复中写出的本地图片路径(如 C:\\截图\\a.png)会在消息正文里直接渲染成图片。可在此调整正文图片的最大显示尺寸;点击正文图片可放大查看原图。支持格式:png/jpg/jpeg/webp/gif/svg/avif/bmp/ico。'
     ),
-    el('div', { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
-      el('span', { style: { fontSize: 13 } }, '正文图片最大尺寸:'),
-      el('input', { type: 'number', min: 64, max: 2400, value: maxWidth, title: '宽度 px', onChange: (e: any) => setMaxWidth(e.target.value), style: inputStyle }),
-      el('span', null, '×'),
-      el('input', { type: 'number', min: 64, max: 2400, value: maxHeight, title: '高度 px', onChange: (e: any) => setMaxHeight(e.target.value), style: inputStyle }),
-      el('button', { style: btnStyle, onClick: save }, '应用'),
-      status ? el('span', { style: { fontSize: 12, color: status.kind === 'ok' ? '#2e9e5b' : '#d64545' } }, status.text) : null
-    )
+    endpoint === undefined
+      ? el('div', { style: { fontSize: 12, opacity: 0.7 } },
+        '当前宿主未向 Web 客户端暴露 inlineImages 配置端点,正文图片使用默认尺寸 640×420。'
+      )
+      : el('div', { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
+        el('span', { style: { fontSize: 13 } }, '正文图片最大尺寸:'),
+        el('input', { type: 'number', min: 64, max: 2400, value: maxWidth, title: '宽度 px', onChange: (e: any) => setMaxWidth(e.target.value), style: inputStyle }),
+        el('span', null, '×'),
+        el('input', { type: 'number', min: 64, max: 2400, value: maxHeight, title: '高度 px', onChange: (e: any) => setMaxHeight(e.target.value), style: inputStyle }),
+        el('button', { style: btnStyle, onClick: save }, '应用'),
+        status ? el('span', { style: { fontSize: 12, color: status.kind === 'ok' ? '#2e9e5b' : '#d64545' } }, status.text) : null
+      )
   )
 }
 
